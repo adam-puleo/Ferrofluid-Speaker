@@ -1,0 +1,6 @@
+[submodule "ESP32/Ferrofluid-Speaker/components/ESP32-A2DP"]
+	path = ESP32/Ferrofluid-Speaker/components/ESP32-A2DP
+	url = https://github.com/pschatzmann/ESP32-A2DP.git
+[submodule "ESP32/Ferrofluid-Speaker/components/esp32-fft"]
+	path = ESP32/Ferrofluid-Speaker/components/esp32-fft
+	url = https://github.com/pschatzmann/esp32-fft.git
