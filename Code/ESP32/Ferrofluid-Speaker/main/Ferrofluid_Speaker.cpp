@@ -4,7 +4,8 @@
         Optimization Level -> Optimize for performance (-O2)
     Component config
         Bluetooth
-            Bluetooth Controller -> BR/EDR Only
+            Bluetooth Controller
+                Bluetooth controller mode -> BR/EDR Only
             Bluedriod Options -> A2DP & SPP
         Log output
             Default -> No output
@@ -13,7 +14,7 @@
 #include <time.h>
 #include <vector>
 
-#define LOG_LOCAL_LEVEL ESP_LOG_INFO
+#define LOG_LOCAL_LEVEL ESP_LOG_ERROR
 const char* TAG = "Ferrofluid";
 #include "esp_log.h"
 #include "driver/adc.h"
@@ -24,10 +25,13 @@ const char* TAG = "Ferrofluid";
 
 BluetoothA2DPSink a2dp_sink;
 
-// Setup aliases for GPIO pins that drive the electromagnets.
-const gpio_num_t MAG_LEFT = GPIO_NUM_5;
-const gpio_num_t MAG_CENTER = GPIO_NUM_12;
-const gpio_num_t MAG_RIGHT = GPIO_NUM_13;
+// Setup aliases for GPIO pins that drive the electromagnet.
+const gpio_num_t MAGNET = GPIO_NUM_5;
+
+// Setup aliases for GPIO pins that drive the LEDs.
+/*const gpio_num_t LEFT_LED = GPIO_NUM_14;
+const gpio_num_t CENTER_LED = GPIO_NUM_27;
+const gpio_num_t RIGHT_LED = GPIO_NUM_17;*/
 
 // Fast fourier transform variables.
 const adc1_channel_t FFT_THRESHOLD_PIN = ADC1_CHANNEL_0;
@@ -36,7 +40,7 @@ const uint16_t MAX_ADC = 4095;
 //const uint16_t MAX_FFT = 255;
 //const uint num_buckets = 7;
 //const float FFT_THRESHOLD = 0.80; // 150.0;  // 100
-const int64_t CALCULATION_INTERVAL = 250000; //125;  // Microseconds // 250
+const int64_t CALCULATION_INTERVAL = 1000; //125;  // Microseconds // 250
 int64_t last_calculation = 0;
 const int64_t OUTPUT_INTERVAL = 2000000; // Two seconds
 int64_t last_output = 0;
@@ -122,7 +126,7 @@ void read_data_stream(const uint8_t *data, uint32_t length) {
         // ESP_LOGI(TAG, "Length: %d", length);
 
         // Create a new pointer cast as 16 bits.
-        uint16_t *samples = (uint16_t*) data;
+        int16_t *samples = (int16_t*) data;
 
         // Create the FFT config structure
         fft_config_t *real_fft_plan = fft_init(sample_count, FFT_REAL, FFT_FORWARD, NULL, NULL);
@@ -344,19 +348,72 @@ void read_data_stream(const uint8_t *data, uint32_t length) {
             gpio_set_level(MAG_RIGHT, 0);
         }*/
 
-        const uint TWENTY_K_HZ_BUCKET = (20000 * real_fft_plan->size) / sample_rate;
+        uint TWENTY_K_HZ_BUCKET = (20000 * real_fft_plan->size) / sample_rate;
+        if (TWENTY_K_HZ_BUCKET > real_fft_plan->size / 2) {
+            // Cap at half the Nyquist frequency.
+            TWENTY_K_HZ_BUCKET = real_fft_plan->size / 2;
+        }
         const uint16_t fft_threshold = (adc1_get_raw(FFT_THRESHOLD_PIN) * max) / MAX_ADC;
         bool high_freq = false;
         for (int k = 1; k <= TWENTY_K_HZ_BUCKET; k++) {
             if (sqrtf(real_fft_plan->output[2*k] * real_fft_plan->output[2*k] + real_fft_plan->output[2*k+1] * real_fft_plan->output[2*k+1]) / sample_count > fft_threshold) {
-                gpio_set_level(MAG_CENTER, 1);
+                gpio_set_level(MAGNET, 1);
                 high_freq = true;
                 break;
             }
         }
         if (!high_freq) {
-            gpio_set_level(MAG_CENTER, 0);
+            gpio_set_level(MAGNET, 0);
         }
+
+        /*const uint ONE_TWENTY_FIVE_HZ_BUCKET = (125 * real_fft_plan->size) / sample_rate;
+        const uint TWO_K_HZ_BUCKET = (2000 * real_fft_plan->size) / sample_rate;
+        uint TWENTY_K_HZ_BUCKET = (20000 * real_fft_plan->size) / sample_rate;
+        if (TWENTY_K_HZ_BUCKET > real_fft_plan->size / 2) {
+            // Cap at half the Nyquist frequency.
+            TWENTY_K_HZ_BUCKET = real_fft_plan->size / 2;
+        }
+        const uint16_t fft_threshold = (adc1_get_raw(FFT_THRESHOLD_PIN) * max) / MAX_ADC;
+        bool high_freq = false;
+        bool magnet_on = false;
+        for (uint k = 1; k < ONE_TWENTY_FIVE_HZ_BUCKET; k++) {  // Low frequencies
+            if (sqrtf(real_fft_plan->output[2*k] * real_fft_plan->output[2*k] + real_fft_plan->output[2*k+1] * real_fft_plan->output[2*k+1]) / sample_count > fft_threshold) {
+                gpio_set_level(MAGNET, 1);
+                magnet_on = true;
+                gpio_set_level(LEFT_LED, 1);
+                high_freq = true;
+                break;
+            }
+        }
+        if (!high_freq) {
+            gpio_set_level(LEFT_LED, 0);
+        }
+        for (uint k = ONE_TWENTY_FIVE_HZ_BUCKET; k < TWO_K_HZ_BUCKET; k++) {  // Mid frequencies
+            if (sqrtf(real_fft_plan->output[2*k] * real_fft_plan->output[2*k] + real_fft_plan->output[2*k+1] * real_fft_plan->output[2*k+1]) / sample_count > fft_threshold) {
+                gpio_set_level(MAGNET, 1);
+                magnet_on = true;
+                gpio_set_level(CENTER_LED, 1);
+                high_freq = true;
+                break;
+            }
+        }
+        if (!high_freq) {
+            gpio_set_level(CENTER_LED, 0);
+        }
+        for (uint k = TWO_K_HZ_BUCKET; k < TWENTY_K_HZ_BUCKET; k++) {  // High frequencies
+            if (sqrtf(real_fft_plan->output[2*k] * real_fft_plan->output[2*k] + real_fft_plan->output[2*k+1] * real_fft_plan->output[2*k+1]) / sample_count > fft_threshold) {
+                gpio_set_level(MAGNET, 1);
+                magnet_on = true;
+                gpio_set_level(RIGHT_LED, 1);
+                break;
+            }
+        }
+        if (!high_freq) {
+            gpio_set_level(RIGHT_LED, 0);
+        }
+        if (!magnet_on) {
+            gpio_set_level(MAGNET, 0);
+        }*/
 
         // Don't forget to clean up at the end to free all the memory that was allocated
         //magnitudes->clear();
@@ -391,9 +448,10 @@ void i2s_state_change_post(esp_a2d_audio_state_t state, void *obj) {
         case ESP_A2D_AUDIO_STATE_STOPPED:
             amp.stop();
 
-            gpio_set_level(MAG_LEFT, 0);
-            gpio_set_level(MAG_CENTER, 0);
-            gpio_set_level(MAG_RIGHT, 0);
+            gpio_set_level(MAGNET, 0);
+            /*gpio_set_level(LEFT_LED, 0);
+            gpio_set_level(CENTER_LED, 0);
+            gpio_set_level(RIGHT_LED, 0);*/
             break;
         
         default:
@@ -405,8 +463,8 @@ bool setup() {
     esp_err_t result;
 
     gpio_config_t io_conf = {};
-    // Set the bit mask for the electromagnet pins. 
-    io_conf.pin_bit_mask = ((1ULL << MAG_LEFT) | (1ULL << MAG_CENTER) | (1ULL << MAG_RIGHT));
+    // Set the bit mask for the output pins. 
+    io_conf.pin_bit_mask = ((1ULL << MAGNET)); // | (1ULL << LEFT_LED) | (1ULL << CENTER_LED) | (1ULL << RIGHT_LED));
     // Set all pins as output mode
     io_conf.mode = GPIO_MODE_OUTPUT;
     // Disable pull-down mode
@@ -416,9 +474,13 @@ bool setup() {
     // Configure GPIO pins with the given settings
     result = gpio_config(&io_conf);
     if (result != ESP_OK) {
-        ESP_LOGE(TAG, "ERROR: Could not configure electromagnet pins: %d", result);
+        ESP_LOGE(TAG, "ERROR: Could not configure output pins: %d", result);
         return false;
     }
+    gpio_set_level(MAGNET, 0);
+    /*gpio_set_level(LEFT_LED, 0);
+    gpio_set_level(CENTER_LED, 0);
+    gpio_set_level(RIGHT_LED, 0);*/
 
     // Configure ADC
     result = adc1_config_width(ADC_WIDTH_12Bit);
