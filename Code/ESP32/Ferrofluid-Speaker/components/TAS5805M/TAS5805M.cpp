@@ -1,7 +1,6 @@
-#include <stdexcept>
 #include <string.h>
 
-#include "TAS5805M.h"
+#include "TAS5805M.hpp"
 #include "FreeRTOSConfig.h"
 
 #define LOG_LOCAL_LEVEL ESP_LOG_INFO
