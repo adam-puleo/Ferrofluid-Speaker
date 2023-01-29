@@ -4,3 +4,5 @@
 [submodule "Code/ESP32/Ferrofluid-Speaker/components/esp32-fft"]
 	path = Code/ESP32/Ferrofluid-Speaker/components/esp32-fft
 	url = https://github.com/pschatzmann/esp32-fft.git
+[submodule "esp32-fft"]
+	url = https://github.com/adam-puleo/esp32-fft.git
