@@ -34,3 +34,9 @@
 # Mac
 .DS_Store
 
+# Build artifacts
+build
+
+# VS Code
+.vscode
+
