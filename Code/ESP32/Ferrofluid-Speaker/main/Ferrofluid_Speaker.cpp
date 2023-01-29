@@ -1,5 +1,8 @@
 /*
     menuconfig
+    Partition Table
+        Partition Table
+            Single factor app (large), no OTA
     Compiler options
         Optimization Level -> Optimize for performance (-O2)
     Component config
@@ -26,6 +29,8 @@
 #include "BluetoothA2DPSink.h"
 #include "fft.h"
 #include "TAS5805M.hpp"
+#include "STUSB4500.hpp"
+#include "i2c-wrapper.hpp"
 
 // Vars for logging
 const char* TAG = "Ferrofluid";
@@ -47,26 +52,33 @@ float *where_to_write = fft_buffer;
 float fft_output[NUM_FFT_SAMPLES];
 fft_config_t *real_fft_plan;
 
-// Setup config constants for ESP's I2C communication to the amp.
+// Setup config constants for ESP's I2C communications.
 const uint32_t I2C_FREQUENCY = 400000;
 const i2c_port_t I2C_PORT = I2C_NUM_0;
-const uint8_t AMP_WRITE_ADDR = 0x58;  // I2C write address
+const uint8_t AMP_WRITE_ADDR = 0x58;  // Amp's I2C write address
+const uint8_t USB_CTRL_WRITE_ADDR = 0x56;  // USB controller's I2C write address.
+const gpio_num_t I2C_GPIO_SCL = GPIO_NUM_19;
+const gpio_num_t I2C_GPIO_SDA = GPIO_NUM_18;
+i2c_wrapper i2c_interface(I2C_PORT, I2C_FREQUENCY, I2C_GPIO_SCL, I2C_GPIO_SDA);
 
 // Setup aliases for GPIO pins that communicate with the amp.
 const gpio_num_t PDN = GPIO_NUM_23;
 const gpio_num_t FAULT = GPIO_NUM_21;
-const gpio_num_t I2C_GPIO_SCL = GPIO_NUM_19;
-const gpio_num_t I2C_GPIO_SDA = GPIO_NUM_18;
+TAS5805M amp(&i2c_interface,
+             AMP_WRITE_ADDR,
+             PDN,
+             FAULT);
+
+// Constants for USB / power requirements.
+const unsigned int M_VOLTS = 12000;  // Millivolts
+const unsigned int M_AMPS = 1000;  // Milliamps
+const long TLOAD = 30; // STUSB4500 I2C registers ready 30ms after reload.
+
+STUSB4500 usb_ctrler(&i2c_interface, USB_CTRL_WRITE_ADDR);
 
 BluetoothA2DPSink a2dp_sink;
 
-TAS5805M amp(AMP_WRITE_ADDR,
-             I2C_PORT,
-             I2C_FREQUENCY,
-             PDN,
-             FAULT,
-             I2C_GPIO_SCL,
-             I2C_GPIO_SDA);
+#define CHECK_ERROR(error_code, ...) if (error_code != ESP_OK) {ESP_LOGE(TAG, ##__VA_ARGS__); return error_code;}
 
 void read_data_stream(const uint8_t *data, uint32_t length) {
     int64_t current_time = esp_timer_get_time();
@@ -186,6 +198,31 @@ void i2s_state_change_post(esp_a2d_audio_state_t state, void *obj) {
 bool setup() {
     esp_err_t result;
 
+    // Confirm power
+    unsigned int m_volt;
+    unsigned int m_amp;
+    bool mismatch;
+
+    result = usb_ctrler.read_power(&m_volt, &m_amp, &mismatch);
+    CHECK_ERROR(result, "First power read failed: %s", esp_err_to_name(result));
+    if (mismatch || m_volt != M_VOLTS || m_amp < M_AMPS) {
+        ESP_LOGD(TAG, "setting up power requirements");
+        result = usb_ctrler.set_power(M_VOLTS, M_AMPS);
+        CHECK_ERROR(result, "Set power failed: %s", esp_err_to_name(result));
+
+        result = usb_ctrler.read_power(&m_volt, &m_amp, &mismatch);
+        CHECK_ERROR(result, "Second power read failed: %s", esp_err_to_name(result));
+        if (mismatch || m_volt < M_VOLTS || m_amp < M_AMPS) {
+            // Still do not have the required power. Stop powering up.
+            ESP_LOGE(TAG, "Power mismatch");
+            ESP_LOGE(TAG, "mismatch: %d", mismatch);
+            ESP_LOGE(TAG, "m_volt: %d", m_volt);
+            ESP_LOGE(TAG, "m_amp: %d", m_amp);
+            return false;
+        }
+    }
+
+    // Configure pin for magnet.
     gpio_config_t io_conf = {};
     // Set the bit mask for the output pins. 
     io_conf.pin_bit_mask = ((1ULL << MAGNET)); // | (1ULL << LEFT_LED) | (1ULL << CENTER_LED) | (1ULL << RIGHT_LED));
@@ -197,10 +234,7 @@ bool setup() {
     io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
     // Configure GPIO pins with the given settings
     result = gpio_config(&io_conf);
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "ERROR: Could not configure output pins: %d", result);
-        return false;
-    }
+    CHECK_ERROR(result, "Could not configure output pins: %d", result);
     gpio_set_level(MAGNET, 0);
     /*gpio_set_level(LEFT_LED, 0);
     gpio_set_level(CENTER_LED, 0);
@@ -208,15 +242,9 @@ bool setup() {
 
     // Configure ADC
     result = adc1_config_width(ADC_WIDTH_12Bit);
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "ERROR: Could not configure ADC width.");
-        return false;
-    }
+    CHECK_ERROR(result, "Could not configure ADC width.");
     result = adc1_config_channel_atten(FFT_THRESHOLD_PIN, ATTENUATION);
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "ERROR: Could not configure ADC attenuation.");
-        return false;
-    }
+    CHECK_ERROR(result, "Could not configure ADC attenuation.");
 
     // Create the FFT config structure
     real_fft_plan = fft_init(NUM_FFT_SAMPLES, FFT_REAL, FFT_FORWARD, fft_buffer, fft_output);
@@ -226,7 +254,7 @@ bool setup() {
     a2dp_sink.set_on_audio_state_changed(i2s_state_change_pre, NULL);
     a2dp_sink.set_on_audio_state_changed_post(i2s_state_change_post, NULL);
     //a2dp_sink.set_bits_per_sample(24);  // Bad things seem to happen when set to 24. The ESP can't keep up with the BT data.
-    // Enable Bluetooth which will also enables I2S (a2dp_sink.start)
+    // Enable Bluetooth which will also enable I2S (a2dp_sink.start)
     a2dp_sink.start("Ferrofluid");
 
     return true;
