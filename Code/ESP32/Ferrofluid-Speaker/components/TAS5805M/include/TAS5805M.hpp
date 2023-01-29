@@ -1,6 +1,6 @@
 #pragma once
 
-#include "driver/i2c.h"
+#include "i2c-wrapper.hpp"
 
 /** 
  * @brief Class for managing the TAS5805M amplifier.
@@ -10,13 +10,10 @@
 class TAS5805M {
     public:
         // Constructor
-        TAS5805M(const uint8_t write_address,
-                 const i2c_port_t port,
-                 const uint32_t frequency,
+        TAS5805M(i2c_wrapper *i2c_interface,
+                 const uint8_t write_address,
                  const gpio_num_t pdn_pin,
-                 const gpio_num_t fault_pin,
-                 const gpio_num_t scl_pin,
-                 const gpio_num_t sda_pin);
+                 const gpio_num_t fault_pin);
 
         esp_err_t start_pre_i2s();
         esp_err_t start_post_i2s();
@@ -27,15 +24,12 @@ class TAS5805M {
         ~TAS5805M();
 
     private:
+        i2c_wrapper *i2c_interface;
+
         // Configuration parameters for the amp.
-        i2c_port_t PORT;
-        uint32_t FREQUENCY;
         gpio_num_t PDN;
         gpio_num_t FAULT;
-        gpio_num_t SCL_PIN;
-        gpio_num_t SDA_PIN;
         uint8_t AMP_WRITE_ADDR;  // I2C write address
-        uint8_t AMP_READ_ADDR;  // I2C read address
 
         enum state_t {
             POWER_OFF,
@@ -44,12 +38,6 @@ class TAS5805M {
             ON
         };
         state_t state = POWER_OFF;
-
-        esp_err_t send_i2c_commands(const i2c_rw_t operation,
-                                    const uint8_t *data_to_write,
-                                    const size_t size_write_data,
-                                    uint8_t *buffer,
-                                    const size_t buffer_size);
 
         // Constants (registers) for I2C data streams.
         const uint8_t PAGE_REG = 0x00;  // Page register, see section 7.5.2.5
@@ -69,9 +57,4 @@ class TAS5805M {
         const uint8_t GLOBAL_FAULT2 = 0x72; // Section 7.6.1.38
         const uint8_t OT_WARNING = 0x73; // Section 7.6.1.39
         const uint8_t BOOK_REG = 0x7F;  // Book register, see section 7.5.2.5
-
-        // Setup config constants for ESP's I2C communication to the amp.
-        const size_t I2C_MASTER_TX_BUF_DISABLE = 0; /*!< I2C master doesn't need buffer */
-        const size_t I2C_MASTER_RX_BUF_DISABLE = 0; /*!< I2C master doesn't need buffer */
-        const TickType_t I2C_WAIT = 1000 / portTICK_RATE_MS;  // A second should be more than enough time?
 };
