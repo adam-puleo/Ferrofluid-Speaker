@@ -1,7 +1,9 @@
 /**
  * @file STUSB4500.cpp
  * @author Adam Puleo (adam.puleo@icloud.com)
- * @brief This code is based off of information found in UM2650 User manual - "The STUSB4500 software programming guide".
+ * @brief This code is based off of information found in the UM2650 User manual: The STUSB4500 software programming guide
+ * Additional code is based off of the SparkFun STUSB4500 library: https://github.com/sparkfun/SparkFun_STUSB4500_Arduino_Library.git
+ * Finally, additional information was gleaned from this document: https://github.com/timkruse/stusb4500/blob/master/docs/STUSB45_RegisterDescription_inofficial.pdf
  * @version 0.1
  * @date 2022-11-25
  * 
@@ -23,6 +25,193 @@ STUSB4500::STUSB4500(i2c_wrapper *i2c_interface,
     this->i2c_interface = i2c_interface;
     this->WRITE_ADDR = write_address;
 }
+
+/**
+ * @brief Based off of SparkFun CUST_ExitTestMode function.
+ * 
+ * @return esp_err_t 
+ */
+esp_err_t STUSB4500::exit_test_mode(void) {
+    esp_err_t result;
+    NVM_CTRL_LOW_RegTypeDef nvm_ctrl_low = {.byte = 0x00};
+    uint8_t buffer[2];
+  
+    nvm_ctrl_low.b.RST_N = 1;
+    buffer[0] = NVM_CTRL_LOW;
+    buffer[1] = nvm_ctrl_low.byte;
+    result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
+                                                    I2C_MASTER_WRITE,
+                                                    buffer, sizeof(buffer),
+                                                    NULL, 0);
+    CHECK_ERROR(result, "Could not reset NVM.");
+
+    // Clear password
+    buffer[0] = NVM_PASSWD;
+    buffer[1] = 0x00;
+    return this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
+                                                  I2C_MASTER_WRITE,
+                                                  buffer, sizeof(buffer),
+                                                  NULL, 0);
+}
+
+/**
+ * @brief Based off section 1.8 of the User Manual.
+ * 
+ * @param m_volt Millivolts
+ * @param m_amp Milliamps
+ * @param mismatch USB power mismatch
+ * @return esp_err_t 
+ */
+esp_err_t STUSB4500::read_power(unsigned int *m_volt, unsigned int *m_amp, bool *mismatch) {
+    esp_err_t result;
+    STUSB_GEN1S_RDO_REG_STATUS_RegTypeDef rdo_reg;
+    uint8_t buffer;
+
+    *m_volt = 0;
+    *m_amp = 0;
+    *mismatch = false;
+
+    for (uint8_t reg = RDO_REG_STATUS_0; reg <= RDO_REG_STATUS_3; reg++) {
+        result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
+                                                        I2C_MASTER_READ,
+                                                        &reg, sizeof(reg),
+                                                        &rdo_reg.bytes[reg - RDO_REG_STATUS_0], 1);
+        CHECK_ERROR(result, "Could not read RDO reg 0x%x", reg);
+    }
+
+    ESP_LOGD(STUSB4500_TAG, "op current: %d, mismatch: %d", rdo_reg.b.OperatingCurrent, rdo_reg.b.CapaMismatch);
+    *m_amp = rdo_reg.b.OperatingCurrent * 10;
+    *mismatch = (rdo_reg.b.CapaMismatch == 1);
+
+    result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
+                                                    I2C_MASTER_READ,
+                                                    &STUSB_GEN1S_MONITORING_CTRL_1, sizeof(STUSB_GEN1S_MONITORING_CTRL_1),
+                                                    &buffer, sizeof(buffer));
+    CHECK_ERROR(result, "Could not read mon ctrl 1 reg.");
+
+    *m_volt = buffer * 100;
+
+    ESP_LOGD(STUSB4500_TAG, "m_volt: %d, m_amp: %d, mismatch: %d", *m_volt, *m_amp, *mismatch);
+    return result;
+}
+
+/**
+ * @brief Based off section 1.4 of the User Manual and the SparkFun's write and CUST_EnterWriteMode function.
+ * 
+ * @param m_volt Millivolts
+ * @param m_amp Milliapms
+ * @return esp_err_t 
+ */
+esp_err_t STUSB4500::set_power(unsigned int m_volt, unsigned int m_amp) {
+    esp_err_t result;
+    uint8_t buffer[2];
+    NVM_CTRL_LOW_RegTypeDef nvm_ctrl_low = {.byte = 0x00};
+    USB_PD_SNK_PDO_TypeDef pdo_reg = {.bytes = {0x00, 0x00, 0x00, 0x00}};
+    
+    ESP_LOGD(STUSB4500_TAG, "setting power, m_volt: %d, m_amp: %d", m_volt, m_amp);
+    if (5000 <= m_volt && m_volt <= 20000 && 500 <= m_amp && m_amp <= 5000) {
+        buffer[0] = NVM_PASSWD;
+        buffer[1] = NVM_CUST_PASSWORD;  /* Set Password 0x95->0x47*/
+        result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
+                                                        I2C_MASTER_WRITE,
+                                                        buffer, sizeof(buffer),
+                                                        NULL, 0);
+        CHECK_ERROR(result, "Could not unlock NVM.");
+
+        buffer[0] = NVM_CTRL_LOW;
+        buffer[1] = 0; /* NVM internal controller reset 0x96->0x00*/
+        result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
+                                                        I2C_MASTER_WRITE,
+                                                        buffer, sizeof(buffer),
+                                                        NULL, 0);
+        CHECK_ERROR(result, "Could not reset NVM controller.");
+
+        nvm_ctrl_low.b.RST_N = 1;
+        nvm_ctrl_low.b.PWR = 1;
+        buffer[0] = NVM_CTRL_LOW;
+        buffer[1] = nvm_ctrl_low.byte;
+        result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
+                                                        I2C_MASTER_WRITE,
+                                                        buffer, sizeof(buffer),
+                                                        NULL, 0);
+        CHECK_ERROR(result, "Could not set PWR and RST_N bits on NVM controller.");
+
+        result = this->i2c_interface->read_multi_regs(this->WRITE_ADDR,
+                                                      DPM_SNK_PDO2_0,
+                                                      sizeof(USB_PD_SNK_PDO_TypeDef),
+                                                      pdo_reg.bytes);
+        CHECK_ERROR(result, "Could not read PDO2.");
+
+        pdo_reg.b.Operational_Current = m_amp / 10;
+        pdo_reg.b.Voltage = m_volt / 50;
+
+        result = this->i2c_interface->write_multi_regs(this->WRITE_ADDR,
+                                                       DPM_SNK_PDO2_0,
+                                                       sizeof(USB_PD_SNK_PDO_TypeDef),
+                                                       pdo_reg.bytes);
+        CHECK_ERROR(result, "Could not write PDO2.");
+
+        result = this->i2c_interface->read_multi_regs(this->WRITE_ADDR,
+                                                      DPM_SNK_PDO2_0,
+                                                      sizeof(USB_PD_SNK_PDO_TypeDef),
+                                                      pdo_reg.bytes);
+        CHECK_ERROR(result, "Could not read back PDO2.");
+        ESP_LOGD(STUSB4500_TAG, "pdo2 read back: amp: 0x%x volt: 0x%x", pdo_reg.b.Operational_Current, pdo_reg.b.Voltage);
+        ESP_LOGD(STUSB4500_TAG, "pdo2 read back: m_amp: %d m_volt: %d", pdo_reg.b.Operational_Current * 10, pdo_reg.b.Voltage * 50);
+
+        result = exit_test_mode();
+        CHECK_ERROR(result, "Could not exit test mode.");
+
+        result = renegotiate();
+
+    } else {
+        result = ESP_ERR_INVALID_ARG;
+    }
+
+    return result;
+}
+
+/**
+ * @brief Issue a USB-C soft reset command to force a power renegotiation.
+ * 
+ * @return esp_err_t 
+ */
+esp_err_t STUSB4500::renegotiate() {
+    esp_err_t result;
+
+    uint8_t soft_rst_buffer[] = {TX_HEADER_LOW, SOFT_RESET};
+    result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
+                                                    I2C_MASTER_WRITE,
+                                                    soft_rst_buffer, sizeof(soft_rst_buffer),
+                                                    NULL, 0);
+    CHECK_ERROR(result, "Could not issue soft reset.");
+    /*soft_rst_buffer[0] = TX_HEADER_HIGH;
+    soft_rst_buffer[1] = 0x00;
+    result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
+                                                    I2C_MASTER_WRITE,
+                                                    soft_rst_buffer, sizeof(soft_rst_buffer),
+                                                    NULL, 0);
+    if (result != ESP_OK) {
+        return result;
+    }*/
+
+    uint8_t cmd_buffer[] = {PD_COMMAND_CTRL, SEND_COMMAND};
+    result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
+                                                    I2C_MASTER_WRITE,
+                                                    cmd_buffer, sizeof(cmd_buffer),
+                                                    NULL, 0);
+    
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+
+    return result;
+}
+
+// Destructor
+STUSB4500::~STUSB4500() {
+    exit_test_mode();
+}
+
+/* Unused functions */
 
 /**
  * @brief Based off section 1.2.
@@ -498,176 +687,6 @@ esp_err_t STUSB4500::enter_write_mode(const bool sec0,
     return result;
 }
 
-esp_err_t STUSB4500::exit_test_mode(void) {
-    esp_err_t result;
-    NVM_CTRL_LOW_RegTypeDef nvm_ctrl_low = {.byte = 0x00};
-    uint8_t buffer[2];
-  
-    nvm_ctrl_low.b.RST_N = 1;
-    buffer[0] = NVM_CTRL_LOW;
-    buffer[1] = nvm_ctrl_low.byte;
-    result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
-                                                    I2C_MASTER_WRITE,
-                                                    buffer, sizeof(buffer),
-                                                    NULL, 0);
-    CHECK_ERROR(result, "Could not reset NVM.");
-
-    // Clear password
-    buffer[0] = NVM_PASSWD;
-    buffer[1] = 0x00;
-    return this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
-                                                  I2C_MASTER_WRITE,
-                                                  buffer, sizeof(buffer),
-                                                  NULL, 0);
-}
-
-/**
- * @brief Based off section 1.8.
- * 
- * @param m_volt 
- * @param m_amp 
- * @param mismatch 
- * @return esp_err_t 
- */
-esp_err_t STUSB4500::read_power(unsigned int *m_volt, unsigned int *m_amp, bool *mismatch) {
-    esp_err_t result;
-    STUSB_GEN1S_RDO_REG_STATUS_RegTypeDef rdo_reg;
-    uint8_t buffer;
-
-    *m_volt = 0;
-    *m_amp = 0;
-    *mismatch = false;
-
-    for (uint8_t reg = RDO_REG_STATUS_0; reg <= RDO_REG_STATUS_3; reg++) {
-        result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
-                                                        I2C_MASTER_READ,
-                                                        &reg, sizeof(reg),
-                                                        &rdo_reg.bytes[reg - RDO_REG_STATUS_0], 1);
-        CHECK_ERROR(result, "Could not read RDO reg 0x%x", reg);
-    }
-
-    ESP_LOGD(STUSB4500_TAG, "op current: %d, mismatch: %d", rdo_reg.b.OperatingCurrent, rdo_reg.b.CapaMismatch);
-    *m_amp = rdo_reg.b.OperatingCurrent * 10;
-    *mismatch = (rdo_reg.b.CapaMismatch == 1);
-
-    result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
-                                                    I2C_MASTER_READ,
-                                                    &STUSB_GEN1S_MONITORING_CTRL_1, sizeof(STUSB_GEN1S_MONITORING_CTRL_1),
-                                                    &buffer, sizeof(buffer));
-    CHECK_ERROR(result, "Could not read mon ctrl 1 reg.");
-
-    *m_volt = buffer * 100;
-
-    ESP_LOGD(STUSB4500_TAG, "m_volt: %d, m_amp: %d, mismatch: %d", *m_volt, *m_amp, *mismatch);
-    return result;
-}
-
-/**
- * @brief Based off section 1.4
- * 
- * @param m_volt 
- * @param m_amp 
- * @return esp_err_t 
- */
-esp_err_t STUSB4500::set_power(unsigned int m_volt, unsigned int m_amp) {
-    esp_err_t result;
-    uint8_t buffer[2];
-    NVM_CTRL_LOW_RegTypeDef nvm_ctrl_low = {.byte = 0x00};
-    USB_PD_SNK_PDO_TypeDef pdo_reg = {.bytes = {0x00, 0x00, 0x00, 0x00}};
-    
-    ESP_LOGD(STUSB4500_TAG, "setting power, m_volt: %d, m_amp: %d", m_volt, m_amp);
-    if (5000 <= m_volt && m_volt <= 20000 && 500 <= m_amp && m_amp <= 5000) {
-        buffer[0] = NVM_PASSWD;
-        buffer[1] = NVM_CUST_PASSWORD;  /* Set Password 0x95->0x47*/
-        result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
-                                                        I2C_MASTER_WRITE,
-                                                        buffer, sizeof(buffer),
-                                                        NULL, 0);
-        CHECK_ERROR(result, "Could not unlock NVM.");
-
-        buffer[0] = NVM_CTRL_LOW;
-        buffer[1] = 0; /* NVM internal controller reset 0x96->0x00*/
-        result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
-                                                        I2C_MASTER_WRITE,
-                                                        buffer, sizeof(buffer),
-                                                        NULL, 0);
-        CHECK_ERROR(result, "Could not reset NVM controller.");
-
-        nvm_ctrl_low.b.RST_N = 1;
-        nvm_ctrl_low.b.PWR = 1;
-        buffer[0] = NVM_CTRL_LOW;
-        buffer[1] = nvm_ctrl_low.byte;
-        result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
-                                                        I2C_MASTER_WRITE,
-                                                        buffer, sizeof(buffer),
-                                                        NULL, 0);
-        CHECK_ERROR(result, "Could not set PWR and RST_N bits on NVM controller.");
-
-        result = this->i2c_interface->read_multi_regs(this->WRITE_ADDR,
-                                                      DPM_SNK_PDO2_0,
-                                                      sizeof(USB_PD_SNK_PDO_TypeDef),
-                                                      pdo_reg.bytes);
-        CHECK_ERROR(result, "Could not read PDO2.");
-
-        pdo_reg.b.Operational_Current = m_amp / 10;
-        pdo_reg.b.Voltage = m_volt / 50;
-
-        result = this->i2c_interface->write_multi_regs(this->WRITE_ADDR,
-                                                       DPM_SNK_PDO2_0,
-                                                       sizeof(USB_PD_SNK_PDO_TypeDef),
-                                                       pdo_reg.bytes);
-        CHECK_ERROR(result, "Could not write PDO2.");
-
-        result = this->i2c_interface->read_multi_regs(this->WRITE_ADDR,
-                                                      DPM_SNK_PDO2_0,
-                                                      sizeof(USB_PD_SNK_PDO_TypeDef),
-                                                      pdo_reg.bytes);
-        CHECK_ERROR(result, "Could not read back PDO2.");
-        ESP_LOGD(STUSB4500_TAG, "pdo2 read back: amp: 0x%x volt: 0x%x", pdo_reg.b.Operational_Current, pdo_reg.b.Voltage);
-        ESP_LOGD(STUSB4500_TAG, "pdo2 read back: m_amp: %d m_volt: %d", pdo_reg.b.Operational_Current * 10, pdo_reg.b.Voltage * 50);
-
-        result = exit_test_mode();
-        CHECK_ERROR(result, "Could not exit test mode.");
-
-        result = renegotiate();
-
-    } else {
-        result = ESP_ERR_INVALID_ARG;
-    }
-
-    return result;
-}
-
-esp_err_t STUSB4500::renegotiate() {
-    esp_err_t result;
-
-    uint8_t soft_rst_buffer[] = {TX_HEADER_LOW, SOFT_RESET};
-    result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
-                                                    I2C_MASTER_WRITE,
-                                                    soft_rst_buffer, sizeof(soft_rst_buffer),
-                                                    NULL, 0);
-    CHECK_ERROR(result, "Could not issue soft reset.");
-    /*soft_rst_buffer[0] = TX_HEADER_HIGH;
-    soft_rst_buffer[1] = 0x00;
-    result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
-                                                    I2C_MASTER_WRITE,
-                                                    soft_rst_buffer, sizeof(soft_rst_buffer),
-                                                    NULL, 0);
-    if (result != ESP_OK) {
-        return result;
-    }*/
-
-    uint8_t cmd_buffer[] = {PD_COMMAND_CTRL, SEND_COMMAND};
-    result = this->i2c_interface->send_i2c_commands(this->WRITE_ADDR,
-                                                    I2C_MASTER_WRITE,
-                                                    cmd_buffer, sizeof(cmd_buffer),
-                                                    NULL, 0);
-    
-    vTaskDelay(3000 / portTICK_PERIOD_MS);
-
-    return result;
-}
-
 esp_err_t STUSB4500::set_pdo_number(uint8_t value) {
     uint8_t buffer[2];
 
@@ -747,9 +766,4 @@ unsigned int STUSB4500::four_bit_current_to_m_amps(uint8_t current) {
     } else {
         return current * 500 - 2500;
     }
-}
-
-// Destructor
-STUSB4500::~STUSB4500() {
-    exit_test_mode();
 }

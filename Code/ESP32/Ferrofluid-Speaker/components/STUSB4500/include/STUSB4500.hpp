@@ -29,8 +29,6 @@ class STUSB4500 {
         STUSB4500(i2c_wrapper *i2c_interface,
                   const uint8_t write_address);
 
-        esp_err_t init_chip();
-
         /**
          * @brief Retrieve the negotiated power contract. If there is no contract zero is returned for both m_volt and m_amp.
          * 
@@ -246,9 +244,13 @@ class STUSB4500 {
         };
         NVM_Sectors sectors;
 
+        esp_err_t renegotiate();
+        esp_err_t exit_test_mode(void);
+
+        /* Unused functions */
+        esp_err_t init_chip();
         esp_err_t read_sector(uint8_t sector_number, uint8_t *bytes);
         esp_err_t write_sector(uint8_t sector, uint8_t *data);
-        esp_err_t renegotiate();
         esp_err_t read_nvm(void);
         esp_err_t write_nvm(const bool default_vals);
         esp_err_t set_pdo_number(uint8_t value);
@@ -262,5 +264,4 @@ class STUSB4500 {
                                    const bool sec2,
                                    const bool sec3,
                                    const bool sec4);
-        esp_err_t exit_test_mode(void);
 };

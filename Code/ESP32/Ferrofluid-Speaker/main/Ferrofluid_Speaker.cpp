@@ -1,4 +1,6 @@
 /*
+    Tested with ESP-IDF v4.4.3. Has not been updated for v5.x yet.
+
     menuconfig
     Partition Table
         Partition Table
@@ -12,7 +14,7 @@
         Bluedroid Options
             Classic Bluetooth -> A2DP & SPP
         Log output
-            Default -> No output
+            Default log verbosity -> No output
 
     Test Music:
     Artist: Tom Misch
