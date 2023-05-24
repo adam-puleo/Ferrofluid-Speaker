@@ -244,7 +244,7 @@ class STUSB4500 {
         };
         NVM_Sectors sectors;
 
-        esp_err_t renegotiate();
+        esp_err_t renegotiate(void);
         esp_err_t exit_test_mode(void);
 
         /* Unused functions */

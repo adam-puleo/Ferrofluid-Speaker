@@ -176,7 +176,7 @@ esp_err_t STUSB4500::set_power(unsigned int m_volt, unsigned int m_amp) {
  * 
  * @return esp_err_t 
  */
-esp_err_t STUSB4500::renegotiate() {
+esp_err_t STUSB4500::renegotiate(void) {
     esp_err_t result;
 
     uint8_t soft_rst_buffer[] = {TX_HEADER_LOW, SOFT_RESET};
