@@ -20,6 +20,10 @@
     Artist: Tom Misch
     Album: Geography
     Song: Movie
+
+    Artist: Red Hot Chili Peppers
+    Album: Blood Sugar Sex Magik
+    Song: Give It Away Now
 */
 
 #include <time.h>
@@ -46,13 +50,16 @@ const gpio_num_t MAGNET = GPIO_NUM_5;
 const adc1_channel_t FFT_THRESHOLD_PIN = ADC1_CHANNEL_0;
 const adc_atten_t ATTENUATION = ADC_ATTEN_DB_2_5;
 const uint16_t MAX_ADC = 4095;
-int16_t max_sample = 0;
 const size_t NUM_FFT_SAMPLES = 4096 / 2 / 2;  // See read_data_stream
-const size_t STRIDE = NUM_FFT_SAMPLES / 4;
-float fft_buffer[STRIDE + NUM_FFT_SAMPLES];
-float *where_to_write = fft_buffer;
-float fft_output[NUM_FFT_SAMPLES];
-fft_config_t *real_fft_plan;
+const size_t STRIDE = 0;  // NUM_FFT_SAMPLES / 2;
+float left_fft_buffer[STRIDE + NUM_FFT_SAMPLES];
+float right_fft_buffer[STRIDE + NUM_FFT_SAMPLES];
+float *where_to_write_left = left_fft_buffer;
+float *where_to_write_right = right_fft_buffer;
+float fft_output_left[NUM_FFT_SAMPLES];
+float fft_output_right[NUM_FFT_SAMPLES];
+fft_config_t *real_fft_plan_left;
+fft_config_t *real_fft_plan_right;
 
 // Setup config constants for ESP's I2C communications.
 const uint32_t I2C_FREQUENCY = 400000;
@@ -74,7 +81,6 @@ TAS5805M amp(&i2c_interface,
 // Constants for USB / power requirements.
 const unsigned int M_VOLTS = 12000;  // Millivolts
 const unsigned int M_AMPS = 1000;  // Milliamps
-const long TLOAD = 30; // STUSB4500 I2C registers ready 30ms after reload.
 
 STUSB4500 usb_ctrler(&i2c_interface, USB_CTRL_WRITE_ADDR);
 
@@ -98,55 +104,60 @@ void read_data_stream(const uint8_t *data, uint32_t length) {
     // Create a new pointer cast as 16 bits.
     int16_t *samples = (int16_t*) data;
 
-    // Fill the FFT buffer with the largest of the left or right channel.
-    // While we are here, find the max sample.
-    max_sample = 0;  // Reset
+    // Fill the FFT buffers.
+    int16_t left_max = 0;
+    int16_t right_max = 0;
     for (size_t idx = 0; idx < sample_count; idx++) {
         int16_t left_sample = samples[idx * 2];
         int16_t right_sample = samples[idx * 2 + 1];
 
-        if (abs(left_sample > max_sample)) {
-            max_sample = left_sample;
-        } else if (abs(right_sample > max_sample)) {
-            max_sample = right_sample;
+        if (abs(left_sample) > left_max) {
+            left_max = abs(left_sample);
         }
 
-        // Grab the largest sample otherwise everything becomes muted.
-        if (abs(left_sample) > abs(right_sample)) {
-            where_to_write[idx] = left_sample;
-        } else {
-            where_to_write[idx] = right_sample;
+        if (abs(right_sample) > right_max) {
+            right_max = abs(right_sample);
         }
+
+        where_to_write_left[idx] = left_sample;
+        where_to_write_right[idx] = right_sample;
     }
 
-    fft_execute(real_fft_plan);
+    fft_execute(real_fft_plan_left);
+    fft_execute(real_fft_plan_right);
 
     // Shuffle the buffer down, dumping a stride's worth of samples.
-    for (size_t idx = STRIDE; idx < NUM_FFT_SAMPLES; idx++) {
+    /*for (size_t idx = STRIDE; idx < NUM_FFT_SAMPLES; idx++) {
         fft_buffer[idx - STRIDE] = fft_buffer[idx];
     }
     if (where_to_write == fft_buffer) {
         where_to_write = &fft_buffer[STRIDE];
-    }
+    }*/
 
-    const uint16_t fft_threshold = (adc1_get_raw(FFT_THRESHOLD_PIN) * max_sample) / MAX_ADC;
+    // const uint16_t fft_threshold = (adc1_get_raw(FFT_THRESHOLD_PIN) * max_sample) / MAX_ADC;
     // const int16_t fft_threshold = ((a2dp_sink.get_volume() * exp2(11)) / (INT8_MAX + 1)) * 0.70;  // Works with Tom's music, but not other types of music.
-    float max_mag = 0.0;
-    int max_mag_bucket = 0; 
+    //float max_mag = 0.0;
+    //int max_mag_bucket = 0; 
     bool high_freq = false;
-    for (int k = 1; k < real_fft_plan->size / 2; k++) {
-        float mag = sqrtf(real_fft_plan->output[2*k] * real_fft_plan->output[2*k] + 
-                          real_fft_plan->output[2*k+1] * real_fft_plan->output[2*k+1]) / NUM_FFT_SAMPLES / 2;
-        if (mag > max_mag) {
-            max_mag = mag;
-            max_mag_bucket = k;
-        }
-        if (mag > fft_threshold) {
+    float left_threshold = 0.2 * left_max;
+    float right_threshold = 0.2 * right_max;
+    for (int k = 1; k < real_fft_plan_left->size / 2; k++) {
+        float mag_left = sqrtf(real_fft_plan_left->output[2*k] * real_fft_plan_left->output[2*k] + 
+                               real_fft_plan_left->output[2*k+1] * real_fft_plan_left->output[2*k+1]) / NUM_FFT_SAMPLES;
+        float mag_right = sqrtf(real_fft_plan_right->output[2*k] * real_fft_plan_right->output[2*k] + 
+                                real_fft_plan_right->output[2*k+1] * real_fft_plan_right->output[2*k+1]) / NUM_FFT_SAMPLES;
+        if (mag_left > left_threshold || mag_right > right_threshold) {
             gpio_set_level(MAGNET, 1);
             high_freq = true;
 
             if (current_time - last_output > OUTPUT_INTERVAL) {
-                ESP_LOGI(TAG, "%d-th freq (%dHZ), mag: %f", k, (k * a2dp_sink.sample_rate()) / NUM_FFT_SAMPLES, mag);
+                if (mag_right > left_threshold) {
+                    ESP_LOGI(TAG, "Left max: %d", left_max);
+                    ESP_LOGI(TAG, "Left: %d-th freq (%dHZ), mag: %f", k, (k * a2dp_sink.sample_rate()) / NUM_FFT_SAMPLES, mag_left);
+                } else {
+                    ESP_LOGI(TAG, "Right max: %d", right_max);
+                    ESP_LOGI(TAG, "Right: %d-th freq (%dHZ), mag: %f", k, (k * a2dp_sink.sample_rate()) / NUM_FFT_SAMPLES, mag_right);
+                }
             }
             break;
         }
@@ -154,10 +165,10 @@ void read_data_stream(const uint8_t *data, uint32_t length) {
     if (!high_freq) {
         gpio_set_level(MAGNET, 0);
     }
-    if (current_time - last_output > OUTPUT_INTERVAL) {
+    /*if (current_time - last_output > OUTPUT_INTERVAL) {
         last_output = current_time;
         ESP_LOGI(TAG, "max input: %d, threshold: %d, max mag: %f, mag freq: %dHZ", max_sample, fft_threshold, max_mag, (max_mag_bucket * a2dp_sink.sample_rate()) / NUM_FFT_SAMPLES);
-    }
+    }*/
 }
 
 void i2s_state_change_pre(esp_a2d_audio_state_t state, void *obj) {
@@ -243,13 +254,14 @@ bool setup() {
     gpio_set_level(RIGHT_LED, 0);*/
 
     // Configure ADC
-    result = adc1_config_width(ADC_WIDTH_12Bit);
+    /*result = adc1_config_width(ADC_WIDTH_12Bit);
     CHECK_ERROR(result, "Could not configure ADC width.");
     result = adc1_config_channel_atten(FFT_THRESHOLD_PIN, ATTENUATION);
-    CHECK_ERROR(result, "Could not configure ADC attenuation.");
+    CHECK_ERROR(result, "Could not configure ADC attenuation.");*/
 
     // Create the FFT config structure
-    real_fft_plan = fft_init(NUM_FFT_SAMPLES, FFT_REAL, FFT_FORWARD, fft_buffer, fft_output);
+    real_fft_plan_left = fft_init(NUM_FFT_SAMPLES, FFT_REAL, FFT_FORWARD, left_fft_buffer, fft_output_left);
+    real_fft_plan_right = fft_init(NUM_FFT_SAMPLES, FFT_REAL, FFT_FORWARD, right_fft_buffer, fft_output_right);
 
     // Configure Bluetooth (and I2S) library.
     a2dp_sink.set_stream_reader(read_data_stream);
