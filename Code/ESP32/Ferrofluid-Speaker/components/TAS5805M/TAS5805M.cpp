@@ -19,7 +19,7 @@ TAS5805M::TAS5805M(i2c_wrapper *i2c_interface,
     /* See 7.5.3.1 Startup Procedures */
 
     gpio_config_t io_conf = {};
-    // Set the bit mask for the PDN output pin. 
+    // Set the bit mask for the PDN output pin.
     io_conf.pin_bit_mask = (1ULL << PDN);
     // Set pin as output mode
     io_conf.mode = GPIO_MODE_OUTPUT;
@@ -217,7 +217,7 @@ bool TAS5805M::error() {
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
-                ESP_LOGI(TAS5805M_TAG, "CHAN_FAULT register: %x", data);
+                ESP_LOGI(TAS5805M_TAG, "CHAN_FAULT register: 0x%x", data);
             } else {
                 ESP_LOGE(TAS5805M_TAG, "ERROR: Could not read CHAN_FAULT Register: %s", esp_err_to_name(result));
                 return result;
@@ -229,7 +229,7 @@ bool TAS5805M::error() {
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
-                ESP_LOGI(TAS5805M_TAG, "GLOBAL_FAULT1 register: %x", data);
+                ESP_LOGI(TAS5805M_TAG, "GLOBAL_FAULT1 register: 0x%x", data);
             } else {
                 ESP_LOGE(TAS5805M_TAG, "ERROR: Could not read GLOBAL_FAULT1 Register: %s", esp_err_to_name(result));
                 return result;
@@ -241,29 +241,31 @@ bool TAS5805M::error() {
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
-                ESP_LOGI(TAS5805M_TAG, "GLOBAL_FAULT2 register: %x", data);
+                ESP_LOGI(TAS5805M_TAG, "GLOBAL_FAULT2 register: 0x%x", data);
             } else {
                 ESP_LOGE(TAS5805M_TAG, "ERROR: Could not read GLOBAL_FAULT2 Register: %s", esp_err_to_name(result));
                 return result;
             }
 
+            /* 7.6.1.14 CLKDET_STATUS Register */
             buffer = CLKDET_STATUS;
             result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
-                ESP_LOGI(TAS5805M_TAG, "CLKDET_STATUS register: %x", data);
+                ESP_LOGI(TAS5805M_TAG, "CLKDET_STATUS register: 0x%x", data);
             } else {
                 ESP_LOGE(TAS5805M_TAG, "ERROR: Could not read CLKDET_STATUS Register: %s", esp_err_to_name(result));
                 return result;
             }
 
+            /* 7.6.1.12 FS_MON Register */
             buffer = FS_MON;
             result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
-                ESP_LOGI(TAS5805M_TAG, "FS_MON register: %x", data);
+                ESP_LOGI(TAS5805M_TAG, "FS_MON register: 0x%x", data);
             } else {
                 ESP_LOGE(TAS5805M_TAG, "ERROR: Could not read FS_MON Register: %s", esp_err_to_name(result));
                 return result;
@@ -274,7 +276,7 @@ bool TAS5805M::error() {
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
-                ESP_LOGI(TAS5805M_TAG, "SIG_CH_CTRL register: %x", data);
+                ESP_LOGI(TAS5805M_TAG, "SIG_CH_CTRL register: 0x%x", data);
             } else {
                 ESP_LOGE(TAS5805M_TAG, "ERROR: Could not read SIG_CH_CTRL Register: %s", esp_err_to_name(result));
                 return result;
@@ -285,18 +287,19 @@ bool TAS5805M::error() {
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
-                ESP_LOGI(TAS5805M_TAG, "DIE_ID register: %x", data);
+                ESP_LOGI(TAS5805M_TAG, "DIE_ID register: 0x%x", data);
             } else {
                 ESP_LOGE(TAS5805M_TAG, "ERROR: Could not read DIE_ID Register: %s", esp_err_to_name(result));
                 return result;
             }
 
+            /* 7.6.1.28 POWER_STATE Register */
             buffer = POWER_STATE;
             result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
-                ESP_LOGI(TAS5805M_TAG, "POWER_STATE register: %x", data);
+                ESP_LOGI(TAS5805M_TAG, "POWER_STATE register: 0x%x", data);
             } else {
                 ESP_LOGE(TAS5805M_TAG, "ERROR: Could not read POWER_STATE Register: %s", esp_err_to_name(result));
                 return result;
@@ -310,7 +313,7 @@ bool TAS5805M::error() {
                                        &data, 1);
             if (result == ESP_OK) {
                 if ((data & 0b10) == 1) {
-                    ESP_LOGI(TAS5805M_TAG, "OT register: %x", data);
+                    ESP_LOGI(TAS5805M_TAG, "OT register: 0x%x", data);
                     error = true;
                 }
             } else {
