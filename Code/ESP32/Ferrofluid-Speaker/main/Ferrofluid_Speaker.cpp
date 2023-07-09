@@ -1,4 +1,7 @@
 /*
+    Inspiration for this came from Seung Hoon Jung's ferrofluid speaker.
+    https://makezine.com/article/craft/fine-art/we-cant-stop-watching-this-diy-ferrofluid-bluetooth-speaker/
+
     Tested with ESP-IDF v4.4.3. Has not been updated for v5.x yet.
 
     menuconfig
@@ -24,6 +27,10 @@
     Artist: Red Hot Chili Peppers
     Album: Blood Sugar Sex Magik
     Song: Give It Away Now
+
+    Artist: Metallica
+    Album: 72 Seasons
+    Song: Lux Æterna
 */
 
 #include <time.h>
@@ -47,11 +54,10 @@ int64_t last_output = 0;
 const gpio_num_t MAGNET = GPIO_NUM_5;
 
 // Fast fourier transform variables.
-const adc1_channel_t FFT_THRESHOLD_PIN = ADC1_CHANNEL_0;
-const adc_atten_t ATTENUATION = ADC_ATTEN_DB_2_5;
-const uint16_t MAX_ADC = 4095;
 const size_t NUM_FFT_SAMPLES = 4096 / 2 / 2;  // See read_data_stream
 const size_t STRIDE = 0;  // NUM_FFT_SAMPLES / 2;
+const float FFT_THRESHOLD = 0.2;  // FFT magnitude has to be greater than this multiplied by by max value read.
+//float FFT_THRESHOLD = 0.0;
 float left_fft_buffer[STRIDE + NUM_FFT_SAMPLES];
 float right_fft_buffer[STRIDE + NUM_FFT_SAMPLES];
 float *where_to_write_left = left_fft_buffer;
@@ -60,6 +66,12 @@ float fft_output_left[NUM_FFT_SAMPLES];
 float fft_output_right[NUM_FFT_SAMPLES];
 fft_config_t *real_fft_plan_left;
 fft_config_t *real_fft_plan_right;
+
+// Potentiometer variables.
+const long POT_POLL_DELAY = 1000 / 4;  // Poll and set the FFT threshold every 250 milliseconds, 4 times a second.
+const adc1_channel_t POT_PIN = ADC1_CHANNEL_0;
+const adc_atten_t ATTENUATION = ADC_ATTEN_DB_2_5;
+const uint16_t MAX_ADC = 4095;
 
 // Setup config constants for ESP's I2C communications.
 const uint32_t I2C_FREQUENCY = 400000;
@@ -134,13 +146,10 @@ void read_data_stream(const uint8_t *data, uint32_t length) {
         where_to_write = &fft_buffer[STRIDE];
     }*/
 
-    // const uint16_t fft_threshold = (adc1_get_raw(FFT_THRESHOLD_PIN) * max_sample) / MAX_ADC;
     // const int16_t fft_threshold = ((a2dp_sink.get_volume() * exp2(11)) / (INT8_MAX + 1)) * 0.70;  // Works with Tom's music, but not other types of music.
-    //float max_mag = 0.0;
-    //int max_mag_bucket = 0; 
     bool high_freq = false;
-    float left_threshold = 0.2 * left_max;
-    float right_threshold = 0.2 * right_max;
+    float left_threshold = FFT_THRESHOLD * left_max;
+    float right_threshold = FFT_THRESHOLD * right_max;
     for (int k = 1; k < real_fft_plan_left->size / 2; k++) {
         float mag_left = sqrtf(real_fft_plan_left->output[2*k] * real_fft_plan_left->output[2*k] + 
                                real_fft_plan_left->output[2*k+1] * real_fft_plan_left->output[2*k+1]) / NUM_FFT_SAMPLES;
@@ -151,6 +160,7 @@ void read_data_stream(const uint8_t *data, uint32_t length) {
             high_freq = true;
 
             if (current_time - last_output > OUTPUT_INTERVAL) {
+                last_output = current_time;
                 if (mag_right > left_threshold) {
                     ESP_LOGI(TAG, "Left max: %d", left_max);
                     ESP_LOGI(TAG, "Left: %d-th freq (%dHZ), mag: %f", k, (k * a2dp_sink.sample_rate()) / NUM_FFT_SAMPLES, mag_left);
@@ -165,10 +175,6 @@ void read_data_stream(const uint8_t *data, uint32_t length) {
     if (!high_freq) {
         gpio_set_level(MAGNET, 0);
     }
-    /*if (current_time - last_output > OUTPUT_INTERVAL) {
-        last_output = current_time;
-        ESP_LOGI(TAG, "max input: %d, threshold: %d, max mag: %f, mag freq: %dHZ", max_sample, fft_threshold, max_mag, (max_mag_bucket * a2dp_sink.sample_rate()) / NUM_FFT_SAMPLES);
-    }*/
 }
 
 void i2s_state_change_pre(esp_a2d_audio_state_t state, void *obj) {
@@ -179,7 +185,7 @@ void i2s_state_change_pre(esp_a2d_audio_state_t state, void *obj) {
             
         case ESP_A2D_AUDIO_STATE_REMOTE_SUSPEND:
         case ESP_A2D_AUDIO_STATE_STOPPED:
-            /* code */
+            amp.stop();
             break;
         
         default:
@@ -253,11 +259,11 @@ bool setup() {
     gpio_set_level(CENTER_LED, 0);
     gpio_set_level(RIGHT_LED, 0);*/
 
-    // Configure ADC
-    /*result = adc1_config_width(ADC_WIDTH_12Bit);
+    // Configure ADC for volume control.
+    result = adc1_config_width(ADC_WIDTH_BIT_12);
     CHECK_ERROR(result, "Could not configure ADC width.");
-    result = adc1_config_channel_atten(FFT_THRESHOLD_PIN, ATTENUATION);
-    CHECK_ERROR(result, "Could not configure ADC attenuation.");*/
+    result = adc1_config_channel_atten(POT_PIN, ATTENUATION);
+    CHECK_ERROR(result, "Could not configure ADC attenuation.");
 
     // Create the FFT config structure
     real_fft_plan_left = fft_init(NUM_FFT_SAMPLES, FFT_REAL, FFT_FORWARD, left_fft_buffer, fft_output_left);
@@ -276,13 +282,24 @@ bool setup() {
 
 extern "C" void app_main(void) {
     if (setup()) {
+        /*uint8_t previous_volume = 0;
+        a2dp_sink.set_volume(previous_volume);*/
+        a2dp_sink.set_volume(UINT8_MAX / 2);
         while (true) {
-            //ESP32_LOGI(TAG, "FFT PIN: %d", gpio_get_level(FFT_THRESHOLD_PIN));
+            /*int pot_raw = adc1_get_raw(POT_PIN);
+            FFT_THRESHOLD = (pot_raw * 0x7FF) / MAX_ADC;
+            ESP_LOGI(TAG, "pot_raw: %d, FFT_THRESHOLD: %f", pot_raw, FFT_THRESHOLD);
+            //const uint8_t volume = (adc1_get_raw(POT_PIN) * 0xFF) / MAX_ADC;
+            //if (volume != previous_volume) {
+            //    a2dp_sink.set_volume(volume);
+            //    previous_volume = volume;
+            //}*/
             if (amp.error()) {
+                ESP_LOGE(TAG, "Amp's FAULT_PIN is active.");
                 a2dp_sink.stop();
                 break;
             }
-            delay(2000);
+            delay(POT_POLL_DELAY);
         }
     }
 }
