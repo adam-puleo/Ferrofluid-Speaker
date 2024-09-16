@@ -26,8 +26,7 @@ class STUSB4500 {
          * @param i2c_lib i2c_wrapper object.
          * @param write_address Full 8-bit address. Constructor sets the LSB to one to form the read address.
          */
-        STUSB4500(i2c_wrapper *i2c_interface,
-                  const uint8_t write_address);
+        STUSB4500(i2c_wrapper *i2c_interface);
 
         /**
          * @brief Retrieve the negotiated power contract. If there is no contract zero is returned for both m_volt and m_amp.
@@ -53,7 +52,6 @@ class STUSB4500 {
 
     private:
         i2c_wrapper *i2c_interface;
-        uint8_t WRITE_ADDR;  // I2C write address - 8-bits
 
         // Constants
         const uint8_t ST_EVAL_BOARD = 0x21;
