@@ -1,3 +1,5 @@
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
 #include "TAS5805M.hpp"
 
 #define LOG_LOCAL_LEVEL ESP_LOG_WARN
@@ -6,11 +8,9 @@ const char* TAS5805M_TAG = "TAS5805M";
 
 // Constructor
 TAS5805M::TAS5805M(i2c_wrapper *i2c_interface,
-                   const uint8_t write_address,
                    const gpio_num_t pdn_pin,
                    const gpio_num_t fault_pin) {
     this->i2c_interface = i2c_interface;
-    this->AMP_WRITE_ADDR = write_address;
     this->PDN = pdn_pin;
     this->FAULT = fault_pin;
 
@@ -72,7 +72,7 @@ esp_err_t TAS5805M::start_post_i2s() {
     /* Section 7.5.2.5 of the TAS5805M Data Sheet explains pages and books. */
     /* Go to page zero. */
     const uint8_t PAGE_ZERO[] = {PAGE_REG, 0x00};
-    result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_WRITE,
+    result = this->i2c_interface->send_i2c_commands(I2C_MASTER_WRITE,
                                PAGE_ZERO, sizeof(PAGE_ZERO),
                                NULL, 0);
     if (result != ESP_OK) {
@@ -82,7 +82,7 @@ esp_err_t TAS5805M::start_post_i2s() {
 
     /* Go to book zero. */
     const uint8_t BOOK_ZERO[] = {BOOK_REG, 0x00};
-    result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_WRITE,
+    result = this->i2c_interface->send_i2c_commands(I2C_MASTER_WRITE,
                                BOOK_ZERO, sizeof(BOOK_ZERO),
                                NULL, 0);
     if (result != ESP_OK) {
@@ -91,7 +91,7 @@ esp_err_t TAS5805M::start_post_i2s() {
     }
 
     /* Go to page zero. */
-    result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_WRITE,
+    result = this->i2c_interface->send_i2c_commands(I2C_MASTER_WRITE,
                                PAGE_ZERO, sizeof(PAGE_ZERO),
                                NULL, 0);
     if (result != ESP_OK) {
@@ -101,7 +101,7 @@ esp_err_t TAS5805M::start_post_i2s() {
 
     /* Move amp to HiZ state */
     const uint8_t HiZ_CMDS[] = {DEVICE_CTRL_2, 0b10};
-    result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_WRITE,
+    result = this->i2c_interface->send_i2c_commands(I2C_MASTER_WRITE,
                                HiZ_CMDS, sizeof(HiZ_CMDS),
                                NULL, 0);
     if (result != ESP_OK) {
@@ -116,7 +116,7 @@ esp_err_t TAS5805M::start_post_i2s() {
 
     /* Set the volume to the middle of the road so we don't blast out someone's ears when we turn on. */
     const uint8_t VOL_CMDS[] = {DIG_VOL_CTL, 0b00110000};
-    result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_WRITE,
+    result = this->i2c_interface->send_i2c_commands(I2C_MASTER_WRITE,
                                VOL_CMDS, sizeof(VOL_CMDS),
                                NULL, 0);
 
@@ -129,7 +129,7 @@ esp_err_t TAS5805M::start_post_i2s() {
     x=(y-b)/m=(12-29.5)/-0.79=22
     Round up a little and AGAIN_REG should be 23. */
     const uint8_t AGAIN_CMDS[] = {AGAIN_REG, 0x17};
-    result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_WRITE, 
+    result = this->i2c_interface->send_i2c_commands(I2C_MASTER_WRITE, 
                                AGAIN_CMDS, sizeof(AGAIN_CMDS),
                                NULL, 0);
     if (result != ESP_OK) {
@@ -140,7 +140,7 @@ esp_err_t TAS5805M::start_post_i2s() {
     /* Setup the ADR/FAULT pin to signal when there is a fault. */
     /* Set ADR/FAULT pin to output fault, set reg 0x61 = 0x0b then 0x60 = 0x01, section 5 */
     const uint8_t FAULT1_CMDS[] = {ADR_PIN_CONFIG, 0b01011};
-    result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_WRITE, 
+    result = this->i2c_interface->send_i2c_commands(I2C_MASTER_WRITE, 
                                FAULT1_CMDS, sizeof(FAULT1_CMDS),
                                NULL, 0);
     if (result != ESP_OK) {
@@ -151,7 +151,7 @@ esp_err_t TAS5805M::start_post_i2s() {
     /* Finish setting up the ADR/FAULT pin. */
     /* Set ADR/FAULT pin to output fault, set reg 0x61 = 0x0b then 0x60 = 0x01, section 5 */
     const uint8_t FAULT2_CMDS[] = {ADR_PIN_CTRL, 0b1};
-    result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_WRITE,
+    result = this->i2c_interface->send_i2c_commands(I2C_MASTER_WRITE,
                                FAULT2_CMDS, sizeof(FAULT2_CMDS),
                                NULL, 0);
     if (result != ESP_OK) {
@@ -165,7 +165,7 @@ esp_err_t TAS5805M::start_post_i2s() {
     /* 7.6.1.9 SAP_CTRL1 Register, does does word length need to be changed from default of 24 bits? */
     /* ESP defaults to 16. When the ESP is set to 24 it freaks out. */
     const uint8_t SAP_CTRL1_CMDS[] = {SAP_CTRL1, 0b00};
-    result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_WRITE,
+    result = this->i2c_interface->send_i2c_commands(I2C_MASTER_WRITE,
                                SAP_CTRL1_CMDS, sizeof(SAP_CTRL1_CMDS),
                                NULL, 0);
     if (result != ESP_OK) {
@@ -176,7 +176,7 @@ esp_err_t TAS5805M::start_post_i2s() {
     /* Tell amp to start playing. */
     /* Play Mode. Register 0x03h -D[1:0]=11, device stays in Play Mode. See section 7.6.1.3 DEVICE_CTRL_2 Register */
     const uint8_t PLAY_CMDS[] = {DEVICE_CTRL_2, 0b11};
-    result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_WRITE,
+    result = this->i2c_interface->send_i2c_commands(I2C_MASTER_WRITE,
                                PLAY_CMDS, sizeof(PLAY_CMDS),
                                NULL, 0);
     if (result != ESP_OK) {
@@ -213,7 +213,7 @@ bool TAS5805M::error() {
             error = true;
             /* 7.6.1.36 CHAN_FAULT Register, read to determine fault */
             buffer = CHAN_FAULT;
-            result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
+            result = this->i2c_interface->send_i2c_commands(I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
@@ -225,7 +225,7 @@ bool TAS5805M::error() {
 
             /* 7.6.1.37 GLOBAL_FAULT1 Register, read to determine fault */
             buffer = GLOBAL_FAULT1;
-            result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
+            result = this->i2c_interface->send_i2c_commands(I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
@@ -237,7 +237,7 @@ bool TAS5805M::error() {
 
             /* 7.6.1.38 GLOBAL_FAULT2 Register */
             buffer = GLOBAL_FAULT2;
-            result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
+            result = this->i2c_interface->send_i2c_commands(I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
@@ -249,7 +249,7 @@ bool TAS5805M::error() {
 
             /* 7.6.1.14 CLKDET_STATUS Register */
             buffer = CLKDET_STATUS;
-            result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
+            result = this->i2c_interface->send_i2c_commands(I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
@@ -261,7 +261,7 @@ bool TAS5805M::error() {
 
             /* 7.6.1.12 FS_MON Register */
             buffer = FS_MON;
-            result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
+            result = this->i2c_interface->send_i2c_commands(I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
@@ -272,7 +272,7 @@ bool TAS5805M::error() {
             }
 
             buffer = SIG_CH_CTRL;
-            result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
+            result = this->i2c_interface->send_i2c_commands(I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
@@ -283,7 +283,7 @@ bool TAS5805M::error() {
             }
 
             buffer = DIE_ID;
-            result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
+            result = this->i2c_interface->send_i2c_commands(I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
@@ -295,7 +295,7 @@ bool TAS5805M::error() {
 
             /* 7.6.1.28 POWER_STATE Register */
             buffer = POWER_STATE;
-            result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
+            result = this->i2c_interface->send_i2c_commands(I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {
@@ -308,7 +308,7 @@ bool TAS5805M::error() {
             /* Check for over temperature warning. */
             /* 7.6.1.39 OT WARNING Register (Offset = 73h) */
             buffer = OT_WARNING;
-            result = this->i2c_interface->send_i2c_commands(AMP_WRITE_ADDR, I2C_MASTER_READ,
+            result = this->i2c_interface->send_i2c_commands(I2C_MASTER_READ,
                                        &buffer, 1,
                                        &data, 1);
             if (result == ESP_OK) {

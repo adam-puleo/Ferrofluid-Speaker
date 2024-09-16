@@ -11,7 +11,6 @@ class TAS5805M {
     public:
         // Constructor
         TAS5805M(i2c_wrapper *i2c_interface,
-                 const uint8_t write_address,
                  const gpio_num_t pdn_pin,
                  const gpio_num_t fault_pin);
 
@@ -29,7 +28,6 @@ class TAS5805M {
         // Configuration parameters for the amp.
         gpio_num_t PDN;
         gpio_num_t FAULT;
-        uint8_t AMP_WRITE_ADDR;  // I2C write address
 
         enum state_t {
             POWER_OFF,
