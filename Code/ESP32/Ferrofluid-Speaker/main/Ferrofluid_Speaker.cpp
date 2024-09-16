@@ -2,7 +2,7 @@
     Inspiration for this came from Seung Hoon Jung's ferrofluid speaker.
     https://makezine.com/article/craft/fine-art/we-cant-stop-watching-this-diy-ferrofluid-bluetooth-speaker/
 
-    Tested with ESP-ADF v2.6.
+    Tested with ESP-ADF v2.7, ESP-IDF v5.3.1, ESP32-A2DP v1.8.3
 
     menuconfig
     Partition Table
