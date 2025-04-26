@@ -65,7 +65,7 @@ esp_err_t TAS5805M::start_post_i2s() {
     esp_err_t result;
 
     // Wait 100ms for I2S to settle, just for giggles.
-    //vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     /* Send commands to initialize the TAS5805M. */
 

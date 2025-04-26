@@ -2,12 +2,12 @@
     Inspiration for this came from Seung Hoon Jung's ferrofluid speaker.
     https://makezine.com/article/craft/fine-art/we-cant-stop-watching-this-diy-ferrofluid-bluetooth-speaker/
 
-    Tested with ESP-ADF v2.7, ESP-IDF v5.3.1, ESP32-A2DP v1.8.3
+    Tested with ESP-ADF v2.7 (db46237027988356673c150348c3294862105d51), ESP-IDF v5.4, ESP32-A2DP v1.8.7, arduino-audio-tools (13ae8ea75c7113f048f28e11d91357942e93716f)
 
     menuconfig
     Partition Table
         Partition Table
-            Single factor app (large), no OTA
+            Single factory app (large), no OTA
     Compiler options
         Optimization Level -> Optimize for performance (-O2)
     Component config
@@ -16,8 +16,9 @@
                 Bluetooth controller mode -> BR/EDR Only
             Bluedroid Options
                 Classic Bluetooth -> A2DP & SPP
-        Log output
-            Default log verbosity -> No output
+        Log
+            Log Level
+                Default log verbosity -> No output
 
     Test Music:
         Artist: Tom Misch
@@ -35,6 +36,10 @@
         Artist: Queens of the Stone Age
         Album: Songs for the Deaf
         Song: No One Knows
+
+        Artist: Iron Maiden
+        Album: Senjutsu
+        Song: Senjutsu
 */
 
 #include <time.h>
@@ -48,7 +53,9 @@
 #include "esp_dsp.h"
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
+#include "esp_timer.h"
 
+#include "AudioTools.h"
 #include "BluetoothA2DPSink.h"
 #include "TAS5805M.hpp"
 #include "STUSB4500.hpp"
@@ -64,7 +71,6 @@ const gpio_num_t MAGNET = GPIO_NUM_5;
 // Fast fourier transform variables.
 const size_t NUM_FFT_SAMPLES = 4096 / 2 / 2; // See read_data_stream
 static_assert(NUM_FFT_SAMPLES == 1024, "FFT lib requires 1024 samples.");
-const float FFT_THRESHOLD = 0.2; // FFT magnitude has to be greater than this multiplied by by max value read.
 // Window coefficients
 __attribute__((aligned(16))) float fft_window[NUM_FFT_SAMPLES];
 // working complex array
@@ -89,13 +95,18 @@ i2c_master_bus_config_t i2c_mst_config = {
     .glitch_ignore_cnt = 7,
     .intr_priority = 0,
     .trans_queue_depth = 0,
-    .flags{.enable_internal_pullup = true}, // ESP32's pull-ups are only good for 100kHz; set to true to remove warning.
+    .flags{.enable_internal_pullup = true, // ESP32's pull-ups are only good for 100kHz; set to true to remove warning.
+           .allow_pd = false,
+        },
 };
 i2c_master_bus_handle_t bus_handle;
 
 // Setup aliases for GPIO pins that communicate with the amp.
 const gpio_num_t PDN = GPIO_NUM_23;
 const gpio_num_t FAULT = GPIO_NUM_21;
+const gpio_num_t I2S_LRCLK = GPIO_NUM_25;
+const gpio_num_t I2S_SCLK = GPIO_NUM_26;
+const gpio_num_t I2S_DIN = GPIO_NUM_22;
 
 // I2C interface variables for TAS5805M.
 i2c_wrapper *i2c_tas5805m;
@@ -109,7 +120,9 @@ const unsigned int M_AMPS = 1000;   // Milliamps
 i2c_wrapper *i2c_usb_ctrler;
 STUSB4500 *usb_ctrler;
 
-BluetoothA2DPSink a2dp_sink;
+// Setup the Bluetooth A2DP sink and I2S.
+I2SStream i2s;
+BluetoothA2DPSink a2dp_sink(i2s);
 
 #define CHECK_ERROR(error_code, ...)  \
     if (error_code != ESP_OK)         \
@@ -134,11 +147,11 @@ void read_data_stream(const uint8_t *data, uint32_t length)
     // Create a new pointer cast as 16 bits.
     int16_t *samples = (int16_t *)data;
 
-    // Convert two input vectors to one complex vector
-    for (int idx = 0; idx < NUM_FFT_SAMPLES; idx++)
-    {
-        y_cf[idx * 2 + 0] = float(samples[idx * 2]) * fft_window[idx];
-        y_cf[idx * 2 + 1] = float(samples[idx * 2 + 1]) * fft_window[idx];
+    // FFT analysis lifted from https://github.com/espressif/esp-dsp/blob/master/examples/fft/main/dsps_fft_main.c
+    // Convert two input vectors to one complex vector and apply window function.
+    for (int i = 0; i < NUM_FFT_SAMPLES; i++) {
+        y_cf[i * 2 + 0] = float(samples[i]) * fft_window[i];
+        y_cf[i * 2 + 1] = float(samples[i + 1]) * fft_window[i];
     }
 
     // Execute the FFT
@@ -147,20 +160,18 @@ void read_data_stream(const uint8_t *data, uint32_t length)
     dsps_bit_rev_fc32(y_cf, NUM_FFT_SAMPLES);
     // Convert one complex vector to two complex vectors
     dsps_cplx2reC_fc32(y_cf, NUM_FFT_SAMPLES);
+    // FFT returns complex numbers, where the first half of y_cf is the left channel and the second
+    // half of y_cf is the right channel.
 
     bool high_freq = false;
-    for (int i = 0; i < NUM_FFT_SAMPLES / 2; i++)
-    {
-        // FFT returns complex numbers, where the first half of y_cf is the left channel and the second
-        // half of y_cf is the right channel.
-        //
+    const int current_volume = a2dp_sink.get_volume();
+    // If the normalized value is above 63% of the max volume, turn on the magnet.
+    const float fft_threshold = (float(current_volume) / INT8_MAX) * (exp2(11) - 1) * 0.63;
+    for (int i = 0; i < NUM_FFT_SAMPLES / 2; i++) {
         // Compute the normalized output so it can be compared with the maximum (current volume).
         float normalized_left = 2.0 * (sqrtf(fft_output_left[i * 2 + 0] * fft_output_left[i * 2 + 0] + fft_output_left[i * 2 + 1] * fft_output_left[i * 2 + 1]) / NUM_FFT_SAMPLES);
         float normalized_right = 2.0 * (sqrtf(fft_output_right[i * 2 + 0] * fft_output_right[i * 2 + 0] + fft_output_right[i * 2 + 1] * fft_output_right[i * 2 + 1]) / NUM_FFT_SAMPLES);
 
-        // If the normalized value is above 63% of the max volume, turn on the magnet.
-        int current_volume = a2dp_sink.get_volume();
-        const float fft_threshold = (float(current_volume) / INT8_MAX) * (exp2(11) - 1) * 0.63;
         if (normalized_left > fft_threshold || normalized_right > fft_threshold)
         {
             ESP_LOGI(TAG, "Current volume: %d, Threshold: %f", current_volume, fft_threshold);
@@ -170,11 +181,11 @@ void read_data_stream(const uint8_t *data, uint32_t length)
             high_freq = true;
             break;
         }
-    }
 
-    if (!high_freq)
-    {
-        gpio_set_level(MAGNET, 0);
+        if (!high_freq)
+        {
+            gpio_set_level(MAGNET, 0);
+        }
     }
 }
 
@@ -277,10 +288,24 @@ bool setup()
     // Initialize the FFT
     result = dsps_fft2r_init_fc32(NULL, CONFIG_DSP_MAX_FFT_SIZE);
     CHECK_ERROR(result, "Could not initialize FFT. Error = %i", result);
-    // Generate hann window
+    // Generate Hann window
     dsps_wind_hann_f32(fft_window, NUM_FFT_SAMPLES);
 
+    /* initialize NVS — it is used to store PHY calibration data */
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+
     // Configure Bluetooth (and I2S) library.
+    auto cfg = i2s.defaultConfig();
+    cfg.pin_bck = I2S_SCLK;
+    cfg.pin_ws = I2S_LRCLK;
+    cfg.pin_data = I2S_DIN;
+    i2s.begin(cfg);
+
     a2dp_sink.set_stream_reader(read_data_stream);
     a2dp_sink.set_on_audio_state_changed(i2s_state_change_pre, NULL);
     a2dp_sink.set_on_audio_state_changed_post(i2s_state_change_post, NULL);
