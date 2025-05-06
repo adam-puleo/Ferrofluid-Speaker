@@ -1,8 +1,5 @@
 [submodule "Code/ESP32/Ferrofluid-Speaker/components/ESP32-A2DP"]
 	path = Code/ESP32/Ferrofluid-Speaker/components/ESP32-A2DP
 	url = https://github.com/pschatzmann/ESP32-A2DP.git
-[submodule "Code/ESP32/Ferrofluid-Speaker/components/arduino-audio-tools"]
-	path = Code/ESP32/Ferrofluid-Speaker/components/arduino-audio-tools
-	url = https://github.com/adam-puleo/arduino-audio-tools.git
 [submodule "arduino-audio-tools"]
 	url = https://github.com/adam-puleo/arduino-audio-tools.git
