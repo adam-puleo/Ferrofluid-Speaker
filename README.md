@@ -3,6 +3,8 @@ A ferrofluid Bluetooth speaker.
 
 Use --recurse-submodules to clone this repo: ```git clone --recurse-submodules https://github.com/adam-puleo/Ferrofluid-Speaker.git```
 
+## Version 3
+https://github.com/user-attachments/assets/6bfb8176-eece-4633-9da7-672fd48b5bfa
 
 ## Version 2
 https://github.com/user-attachments/assets/a1edecc6-fbbd-465e-8119-4edb1a70faee
