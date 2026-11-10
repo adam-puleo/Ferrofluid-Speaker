@@ -3,6 +3,7 @@ idf_component_register(SRCS "Ferrofluid_Speaker.cpp"
                        REQUIRES esp_driver_i2c
                                 esp_driver_gpio
                                 esp_timer
+                                esp_adc
                                 arduino-audio-tools
                                 ESP32-A2DP
                                 STUSB4500

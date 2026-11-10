@@ -313,7 +313,7 @@ bool TAS5805M::error() {
                                        &data, 1);
             if (result == ESP_OK) {
                 if ((data & 0b10) == 1) {
-                    ESP_LOGI(TAS5805M_TAG, "OT register: 0x%x", data);
+                    ESP_LOGE(TAS5805M_TAG, "OT register: 0x%x", data);
                     error = true;
                 }
             } else {

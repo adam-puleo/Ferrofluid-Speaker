@@ -2,7 +2,7 @@
     Inspiration for this came from Seung Hoon Jung's ferrofluid speaker.
     https://makezine.com/article/craft/fine-art/we-cant-stop-watching-this-diy-ferrofluid-bluetooth-speaker/
 
-    Tested with ESP-ADF v2.7 (db46237027988356673c150348c3294862105d51), ESP-IDF v5.4, ESP32-A2DP v1.8.7, arduino-audio-tools (13ae8ea75c7113f048f28e11d91357942e93716f)
+    Tested with ESP-ADF v2.8, ESP-IDF v5.5.5, ESP32-A2DP v1.8.12, arduino-audio-tools v1.3.0
 
     menuconfig
     Partition Table
@@ -11,11 +11,12 @@
     Compiler options
         Optimization Level -> Optimize for performance (-O2)
     Component config
-        Bluetooth
-            Controller Options
-                Bluetooth controller mode -> BR/EDR Only
+        Bluetooth (Enable Bluetooth)
             Bluedroid Options
                 Classic Bluetooth -> A2DP & SPP
+                Deselect -> Bluetooth Low Energy
+            Controller Options
+                Bluetooth controller mode -> BR/EDR Only
         Log
             Log Level
                 Default log verbosity -> No output
@@ -40,20 +41,27 @@
         Artist: Iron Maiden
         Album: Senjutsu
         Song: Senjutsu
+
+        Artist: In This Moment
+        Album: Blood
+        Song: Blood
 */
 
-#include <time.h>
+//#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+//#include "freertos/task.h"
 #include "esp_system.h"
 #include "esp_dsp.h"
 #include "driver/i2c_master.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 
 #include "AudioTools.h"
 #include "BluetoothA2DPSink.h"
@@ -65,12 +73,20 @@ const char *TAG = "Ferrofluid";
 const int64_t OUTPUT_INTERVAL = 2000000; // Two seconds
 int64_t last_output = 0;
 
-// Setup aliases for GPIO pins that drive the electromagnet.
+// Setup aliases for the GPIO pin that drives the electromagnet.
 const gpio_num_t MAGNET = GPIO_NUM_5;
+
+// ADC used to set PEAK_RATIO. ADC1 channel 0 is GPIO36 on the ESP32.
+// Input range is 0 - 1.1V. 2.5dB attenuation is used because 0dB tops out around 950mV.
+const adc_unit_t PEAK_RATIO_ADC_UNIT = ADC_UNIT_1;
+const adc_channel_t PEAK_RATIO_ADC_CHANNEL = ADC_CHANNEL_0;
+const adc_atten_t PEAK_RATIO_ADC_ATTEN = ADC_ATTEN_DB_2_5;
+adc_oneshot_unit_handle_t adc_handle;
+adc_cali_handle_t adc_cali_handle;
 
 // Fast fourier transform variables.
 const size_t NUM_FFT_SAMPLES = 4096 / 2 / 2; // See read_data_stream
-static_assert(NUM_FFT_SAMPLES == 1024, "FFT lib requires 1024 samples.");
+static_assert(NUM_FFT_SAMPLES == 1024, "FFT size must match the 4096-byte A2DP buffer (1024 stereo frames).");
 // Window coefficients
 __attribute__((aligned(16))) float fft_window[NUM_FFT_SAMPLES];
 // working complex array
@@ -140,18 +156,20 @@ void read_data_stream(const uint8_t *data, uint32_t length)
     size_t sample_count = length / 2 / 2;
     if (sample_count != NUM_FFT_SAMPLES)
     {
-        ESP_LOGE(TAG, "Sample Count: %d", sample_count);
-        assert(sample_count == NUM_FFT_SAMPLES);
+        ESP_LOGE(TAG, "Unexpected sample count: %d", sample_count);
+        gpio_set_level(MAGNET, 0);
+        return;
     }
 
     // Create a new pointer cast as 16 bits.
     int16_t *samples = (int16_t *)data;
 
     // FFT analysis lifted from https://github.com/espressif/esp-dsp/blob/master/examples/fft/main/dsps_fft_main.c
-    // Convert two input vectors to one complex vector and apply window function.
+    // De-interleave the stereo frames into one complex vector (left in the real part,
+    // right in the imaginary part) and apply the window function.
     for (int i = 0; i < NUM_FFT_SAMPLES; i++) {
-        y_cf[i * 2 + 0] = float(samples[i]) * fft_window[i];
-        y_cf[i * 2 + 1] = float(samples[i + 1]) * fft_window[i];
+        y_cf[i * 2 + 0] = float(samples[i * 2 + 0]) * fft_window[i];
+        y_cf[i * 2 + 1] = float(samples[i * 2 + 1]) * fft_window[i];
     }
 
     // Execute the FFT
@@ -163,30 +181,58 @@ void read_data_stream(const uint8_t *data, uint32_t length)
     // FFT returns complex numbers, where the first half of y_cf is the left channel and the second
     // half of y_cf is the right channel.
 
-    bool high_freq = false;
-    const int current_volume = a2dp_sink.get_volume();
-    // If the normalized value is above 63% of the max volume, turn on the magnet.
-    const float fft_threshold = (float(current_volume) / INT8_MAX) * (exp2(11) - 1) * 0.63;
-    for (int i = 0; i < NUM_FFT_SAMPLES / 2; i++) {
-        // Compute the normalized output so it can be compared with the maximum (current volume).
-        float normalized_left = 2.0 * (sqrtf(fft_output_left[i * 2 + 0] * fft_output_left[i * 2 + 0] + fft_output_left[i * 2 + 1] * fft_output_left[i * 2 + 1]) / NUM_FFT_SAMPLES);
-        float normalized_right = 2.0 * (sqrtf(fft_output_right[i * 2 + 0] * fft_output_right[i * 2 + 0] + fft_output_right[i * 2 + 1] * fft_output_right[i * 2 + 1]) / NUM_FFT_SAMPLES);
-
-        if (normalized_left > fft_threshold || normalized_right > fft_threshold)
+    // Find the strongest bin and the average power across all bins, skipping DC (bin 0).
+    const int NUM_BINS = NUM_FFT_SAMPLES / 2;
+    float max_power = 0.0f;
+    float total_power = 0.0f;
+    int max_bin = 0;
+    for (int i = 1; i < NUM_BINS; i++) {
+        float pl = fft_output_left[i * 2 + 0] * fft_output_left[i * 2 + 0] + fft_output_left[i * 2 + 1] * fft_output_left[i * 2 + 1];
+        float pr = fft_output_right[i * 2 + 0] * fft_output_right[i * 2 + 0] + fft_output_right[i * 2 + 1] * fft_output_right[i * 2 + 1];
+        float p = pl > pr ? pl : pr;
+        total_power += p;
+        if (p > max_power)
         {
-            ESP_LOGI(TAG, "Current volume: %d, Threshold: %f", current_volume, fft_threshold);
-            ESP_LOGI(TAG, "%d-th freq (%dHZ) - Left: %f, Right: %f", i, (i * a2dp_sink.sample_rate()) / NUM_FFT_SAMPLES, fft_output_left[i], fft_output_right[i]);
-            // ESP_LOGI(TAG, "Input Left: %d, Input Right: %d", samples[i * 2], samples[i * 2 + 1]);
-            gpio_set_level(MAGNET, 1);
-            high_freq = true;
-            break;
-        }
-
-        if (!high_freq)
-        {
-            gpio_set_level(MAGNET, 0);
+            max_power = p;
+            max_bin = i;
         }
     }
+    const float mean_power = total_power / (NUM_BINS - 1);
+
+    // A bin is "dominant" when it holds far more power than the average bin. The ratio is
+    // independent of volume (the A2DP library scales the samples before this callback).
+    // PEAK_RATIO is set by the ADC voltage in millivolts (0 - 1100), so it can be tuned by ear.
+    // MIN_POWER keeps silence/noise from triggering the magnet.
+    int peak_ratio_mv = 0;
+    esp_err_t adc_result = adc_oneshot_get_calibrated_result(adc_handle, adc_cali_handle, PEAK_RATIO_ADC_CHANNEL, &peak_ratio_mv);
+    if (adc_result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Could not read PEAK_RATIO ADC: %s", esp_err_to_name(adc_result));
+        gpio_set_level(MAGNET, 0);
+        return;
+    }
+    const float PEAK_RATIO = float(peak_ratio_mv);  // / 10.0f; // mean_power is consistently about 100 times less than max_power thus the /10.0f is not needed. It was used in early testing to make the numbers more readable.
+    const float MIN_POWER = 1e6f;
+    const bool dominant = max_power > MIN_POWER && max_power > PEAK_RATIO * mean_power;
+
+    // Short-circuit so esp_timer_get_time is only called when info messages will be logged.
+    if (LOG_LOCAL_LEVEL >= ESP_LOG_INFO && esp_log_level_get(TAG) >= ESP_LOG_INFO &&
+        esp_timer_get_time() - last_output > OUTPUT_INTERVAL)
+    {
+        ESP_LOGI(
+            TAG,
+            "Dominant bin %d (%dHz), Peak ratio: %f, min power: %f, max power: %f, mean power: %f",
+            max_bin,
+            (max_bin * a2dp_sink.sample_rate()) / NUM_FFT_SAMPLES,
+            PEAK_RATIO,
+            MIN_POWER,
+            max_power,
+            mean_power
+        );
+        last_output = esp_timer_get_time();
+    }
+
+    gpio_set_level(MAGNET, dominant ? 1 : 0);
 }
 
 void i2s_state_change_pre(esp_a2d_audio_state_t state, void *obj)
@@ -285,6 +331,26 @@ bool setup()
     gpio_set_level(CENTER_LED, 0);
     gpio_set_level(RIGHT_LED, 0);*/
 
+    // Configure the ADC used to set PEAK_RATIO.
+    adc_oneshot_unit_init_cfg_t adc_init_cfg = {};
+    adc_init_cfg.unit_id = PEAK_RATIO_ADC_UNIT;
+    result = adc_oneshot_new_unit(&adc_init_cfg, &adc_handle);
+    CHECK_ERROR(result, "Could not initialize ADC unit: %s", esp_err_to_name(result));
+
+    adc_oneshot_chan_cfg_t adc_chan_cfg = {};
+    adc_chan_cfg.atten = PEAK_RATIO_ADC_ATTEN;
+    adc_chan_cfg.bitwidth = ADC_BITWIDTH_DEFAULT;
+    result = adc_oneshot_config_channel(adc_handle, PEAK_RATIO_ADC_CHANNEL, &adc_chan_cfg);
+    CHECK_ERROR(result, "Could not configure ADC channel: %s", esp_err_to_name(result));
+
+    // The ESP32 only supports the line fitting calibration scheme.
+    adc_cali_line_fitting_config_t adc_cali_cfg = {};
+    adc_cali_cfg.unit_id = PEAK_RATIO_ADC_UNIT;
+    adc_cali_cfg.atten = PEAK_RATIO_ADC_ATTEN;
+    adc_cali_cfg.bitwidth = ADC_BITWIDTH_DEFAULT;
+    result = adc_cali_create_scheme_line_fitting(&adc_cali_cfg, &adc_cali_handle);
+    CHECK_ERROR(result, "Could not create ADC calibration: %s", esp_err_to_name(result));
+
     // Initialize the FFT
     result = dsps_fft2r_init_fc32(NULL, CONFIG_DSP_MAX_FFT_SIZE);
     CHECK_ERROR(result, "Could not initialize FFT. Error = %i", result);
@@ -315,6 +381,7 @@ bool setup()
 
     return true;
 }
+
 
 extern "C" void app_main(void)
 {
