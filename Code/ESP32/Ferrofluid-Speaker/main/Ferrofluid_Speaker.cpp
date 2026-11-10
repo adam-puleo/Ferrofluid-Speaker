@@ -47,13 +47,11 @@
         Song: Blood
 */
 
-//#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include "freertos/FreeRTOS.h"
-//#include "freertos/task.h"
 #include "esp_system.h"
 #include "esp_dsp.h"
 #include "driver/i2c_master.h"
